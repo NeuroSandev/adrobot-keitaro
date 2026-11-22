@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Keitaro — кампании</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <a href="/">Keitaro campaign tool</a>
+  <span class="badge" id="fake-badge" hidden>демо: эмулятор Keitaro</span>
+</header>
+<main>
+  <section class="card">
+    <h2>New campaign</h2>
+    <form id="create-form" autocomplete="off">
+      <label for="name">Name</label>
+      <input id="name" required maxlength="255" placeholder="campaign 2">
+
+      <label for="geo">Geo</label>
+      <input id="geo" required placeholder="MX,AU,RO,...">
+      <div class="muted">Трафик из этих стран уйдёт на <code id="safe-url">safe-URL</code>, остальной — на оффер.</div>
+
+      <label for="offer">Offer</label>
+      <div><input id="offer" required placeholder="поиск по офферам: название или ID"></div>
+
+      <details>
+        <summary>Домен, группа, источник</summary>
+        <div class="row">
+          <div><label for="domain">Домен</label><select id="domain"></select></div>
+          <div><label for="group">Группа</label><select id="group"></select></div>
+          <div><label for="source">Источник</label><select id="source"></select></div>
+        </div>
+      </details>
+
+      <p><button type="submit" id="create-btn">Create</button></p>
+      <div id="create-msg" hidden></div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Кампании</h2>
+    <table>
+      <thead><tr><th>ID</th><th>Название</th><th>Alias</th><th></th></tr></thead>
+      <tbody id="campaigns"><tr><td colspan="4" class="muted">Загрузка…</td></tr></tbody>
+    </table>
+  </section>
+</main>
+
+<script src="/static/common.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+
+function fillSelect(select, items, defaultName, autoLabel) {
+  const options = [`<option value="">${esc(autoLabel)}</option>`].concat(
+    items.map(i => `<option value="${i.id}">${esc(i.name)}</option>`));
+  select.innerHTML = options.join("");
+  const match = items.find(i => (i.name || "").toLowerCase() === (defaultName || "").toLowerCase());
+  if (match) select.value = match.id;
+}
+
+async function loadMeta() {
+  const meta = await markFakeMode();
+  if (!meta) { showMsg($("create-msg"), "Не удалось загрузить справочники Keitaro. Проверьте KEITARO_URL и ключ.", false); return; }
+  $("safe-url").textContent = meta.defaults.safe_url;
+  fillSelect($("domain"), meta.domains, meta.defaults.domain, "по умолчанию");
+  fillSelect($("group"), meta.groups, meta.defaults.group, `создать «${meta.defaults.group}»`);
+  fillSelect($("source"), meta.sources, meta.defaults.source, `создать «${meta.defaults.source}»`);
+}
+
+async function loadCampaigns() {
+  try {
+    const rows = await api("GET", "/api/campaigns");
+    $("campaigns").innerHTML = rows.map(c => `
+      <tr><td>${c.id}</td><td>${esc(c.name)} ${c.created_here ? '<span class="muted">(создана здесь)</span>' : ""}</td>
+      <td><code>${esc(c.alias || "")}</code></td>
+      <td class="num"><a href="/campaigns/${c.id}">Редактировать офферы →</a></td></tr>`).join("")
+      || `<tr><td colspan="4" class="muted">Кампаний пока нет</td></tr>`;
+  } catch (e) {
+    $("campaigns").innerHTML = `<tr><td colspan="4" class="muted">${esc(e.message)}</td></tr>`;
+  }
+}
+
+offerAutocomplete($("offer"));
+
+$("create-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const msg = $("create-msg");
+  const offerId = Number($("offer").dataset.offerId || ($("offer").value.trim().match(/^\[?(\d+)\]?/) || [])[1]);
+  if (!offerId) { showMsg(msg, "Выберите оффер из списка", false); return; }
+  const num = v => (v ? Number(v) : null);
+  $("create-btn").disabled = true;
+  try {
+    const created = await api("POST", "/api/campaigns", {
+      name: $("name").value, geo: $("geo").value, offer_id: offerId,
+      domain_id: num($("domain").value), group_id: num($("group").value), source_id: num($("source").value),
+    });
+    showMsg(msg, `Кампания создана: #${created.keitaro_id}<br>URL: <a href="${esc(created.url)}" target="_blank">${esc(created.url)}</a><br>
+      Гео ${esc(created.geo.join(", "))} → safe-URL, остальные → оффер ${created.offer_id}.<br>
+      <a href="/campaigns/${created.keitaro_id}">Открыть редактор офферов →</a>`, true);
+    e.target.reset();
+    delete $("offer").dataset.offerId;
+    await loadMeta();
+    await loadCampaigns();
+  } catch (err) {
+    showMsg(msg, esc(err.message), false);
+  } finally {
+    $("create-btn").disabled = false;
+  }
+});
+
+loadMeta();
+loadCampaigns();
+</script>
+</body>
+</html>

@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>Keitaro — редактор офферов</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <a href="/">← Кампании</a>
+  <span id="title">Загрузка…</span>
+  <span class="badge" id="fake-badge" hidden>демо: эмулятор Keitaro</span>
+</header>
+<main>
+  <section class="card">
+    <h2>Потоки и офферы</h2>
+    <div class="row">
+      <div><label for="mode">Перерасчёт долей при добавлении и удалении</label>
+        <select id="mode">
+          <option value="even">Поровну между всеми офферами</option>
+          <option value="proportional">Сохранять пропорции остальных</option>
+        </select></div>
+    </div>
+    <div id="msg" hidden></div>
+    <div id="streams" style="margin-top:14px"></div>
+  </section>
+
+  <section class="card">
+    <h2>История правок</h2>
+    <table>
+      <thead><tr><th>Когда</th><th>Поток</th><th>Действие</th><th>Было</th><th>Стало</th></tr></thead>
+      <tbody id="history"></tbody>
+    </table>
+  </section>
+</main>
+
+<script src="/static/common.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const campaignId = Number(location.pathname.split("/").pop());
+const msg = $("msg");
+
+function fmtOffers(list) {
+  return list.map(o => `${o.offer_id}: ${o.share}%`).join(", ") || "—";
+}
+
+function streamCard(s) {
+  if (!s.editable) {
+    const filters = s.filters.map(f => `${esc(f.name)} ${esc(f.mode)} ${esc((f.payload || []).join(", "))}`).join("; ");
+    return `<div class="stream"><h3>#${s.position ?? "—"} ${esc(s.name)}</h3>
+      <div class="meta">Редирект на <code>${esc(s.action_payload || "")}</code>${filters ? ` · фильтры: ${filters}` : ""}</div></div>`;
+  }
+  const rows = s.offers.map(o => `
+    <tr data-offer="${o.offer_id}">
+      <td>[${o.offer_id}]</td><td>${esc(o.name)}</td>
+      <td><div class="bar"><span style="width:${o.share}%"></span></div></td>
+      <td class="num"><input class="share" type="number" min="0" max="100" step="1" value="${o.share}"> %</td>
+      <td class="num"><button class="danger small" data-remove="${o.offer_id}"
+        ${s.offers.length < 2 ? 'disabled title="Последний оффер удалить нельзя"' : ""}>Удалить</button></td>
+    </tr>`).join("");
+  return `<div class="stream" data-stream="${s.id}">
+    <h3>#${s.position ?? "—"} ${esc(s.name)}</h3>
+    <div class="meta">Поток ${s.id} · офферов: ${s.offers.length}</div>
+    <table><thead><tr><th>ID</th><th>Оффер</th><th>Доля</th><th class="num">%</th><th></th></tr></thead>
+      <tbody>${rows}</tbody>
+      <tfoot><tr><td colspan="3"></td><td class="num">Итого: <span class="total ${s.total_share === 100 ? "total-ok" : "total-bad"}">${s.total_share}</span> %</td>
+        <td class="num"><button class="secondary small" data-save>Сохранить доли</button></td></tr></tfoot>
+    </table>
+    <div class="row" style="margin-top:10px">
+      <div><input class="add-input" placeholder="Добавить оффер: название или ID"></div>
+      <div class="auto"><button class="small" data-add>Добавить</button></div>
+    </div>
+  </div>`;
+}
+
+async function load() {
+  try {
+    const campaign = await api("GET", `/api/campaigns/${campaignId}`);
+    $("title").textContent = `#${campaign.id} ${campaign.name}`;
+    $("streams").innerHTML = campaign.streams.map(streamCard).join("") || `<p class="muted">У кампании нет потоков</p>`;
+    document.querySelectorAll(".add-input").forEach(input => offerAutocomplete(input));
+    const changes = await api("GET", `/api/campaigns/${campaignId}/history`);
+    const actions = { add: "добавлен", remove: "удалён", set: "доли вручную" };
+    $("history").innerHTML = changes.map(c => `<tr>
+      <td>${new Date(c.created_at).toLocaleString()}</td><td>${c.stream_id}</td>
+      <td>${actions[c.action] || c.action}${c.offer_id ? ` ${c.offer_id}` : ""}</td>
+      <td class="muted">${esc(fmtOffers(c.before))}</td><td>${esc(fmtOffers(c.after))}</td></tr>`).join("")
+      || `<tr><td colspan="5" class="muted">Правок пока не было</td></tr>`;
+  } catch (e) {
+    showMsg(msg, esc(e.message), false);
+  }
+}
+
+async function run(action, okText) {
+  msg.hidden = true;
+  document.querySelectorAll("button").forEach(b => (b.disabled = true));
+  try {
+    await action();
+    showMsg(msg, okText, true);
+  } catch (e) {
+    showMsg(msg, esc(e.message), false);
+  }
+  await load();
+}
+
+// Пересчёт «Итого» при ручном вводе долей
+$("streams").addEventListener("input", e => {
+  if (!e.target.classList.contains("share")) return;
+  const card = e.target.closest("[data-stream]");
+  const total = [...card.querySelectorAll(".share")].reduce((sum, i) => sum + (Number(i.value) || 0), 0);
+  const el = card.querySelector(".total");
+  el.textContent = total;
+  el.className = "total " + (total === 100 ? "total-ok" : "total-bad");
+});
+
+$("streams").addEventListener("click", e => {
+  const card = e.target.closest("[data-stream]");
+  if (!card) return;
+  const streamId = card.dataset.stream;
+  const mode = $("mode").value;
+
+  if (e.target.dataset.remove) {
+    const offerId = e.target.dataset.remove;
+    if (!confirm(`Удалить оффер ${offerId} из потока?`)) return;
+    run(() => api("DELETE", `/api/streams/${streamId}/offers/${offerId}?mode=${mode}`), `Оффер ${offerId} удалён, доли пересчитаны`);
+  }
+  if (e.target.hasAttribute("data-add")) {
+    const input = card.querySelector(".add-input");
+    const offerId = Number(input.dataset.offerId || (input.value.trim().match(/^\[?(\d+)\]?/) || [])[1]);
+    if (!offerId) { showMsg(msg, "Выберите оффер из списка", false); return; }
+    run(() => api("POST", `/api/streams/${streamId}/offers`, { offer_id: offerId, mode }), `Оффер ${offerId} добавлен, доли пересчитаны`);
+  }
+  if (e.target.hasAttribute("data-save")) {
+    const offers = [...card.querySelectorAll("tr[data-offer]")].map(row => ({
+      offer_id: Number(row.dataset.offer), share: Number(row.querySelector(".share").value),
+    }));
+    run(() => api("PUT", `/api/streams/${streamId}/offers`, { offers }), "Доли сохранены");
+  }
+});
+
+markFakeMode();
+load();
+</script>
+</body>
+</html>
