@@ -18,9 +18,12 @@ python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env          # впишите KEITARO_URL и KEITARO_API_KEY
+docker compose up -d db       # PostgreSQL 16 (логин/пароль/база: adrobot)
 alembic upgrade head          # миграции БД
 uvicorn app.main:app --reload
 ```
+
+Основная БД — PostgreSQL. Без Docker можно взять SQLite: `DATABASE_URL=sqlite:///./app.db`.
 
 Откройте http://127.0.0.1:8000. Документация API: http://127.0.0.1:8000/docs.
 
@@ -39,7 +42,7 @@ KEITARO_FAKE=1 uvicorn app.main:app --reload
 | `KEITARO_URL` | — | адрес трекера, с `/admin_api/v1` или без |
 | `KEITARO_API_KEY` | — | ключ из «Профиль → API ключи» |
 | `KEITARO_FAKE` | `0` | `1` — работать с эмулятором |
-| `DATABASE_URL` | `sqlite:///./app.db` | любая БД SQLAlchemy, например `postgresql+psycopg://...` (драйвер ставится отдельно) |
+| `DATABASE_URL` | `sqlite:///./app.db` | в `.env.example` указан PostgreSQL: `postgresql+psycopg://adrobot:adrobot@localhost:5432/adrobot`. SQLite подходит для быстрого запуска и тестов |
 | `DEFAULT_DOMAIN` | — | домен новых кампаний; если не найден, берётся первый |
 | `DEFAULT_GROUP_NAME` | `FORTESTS` | группа новых кампаний |
 | `DEFAULT_SOURCE_NAME` | `FORTESTS` | источник трафика новых кампаний |
@@ -114,8 +117,10 @@ migrations/           Alembic
 ## Тесты
 
 ```bash
-pytest -q
+python -m pytest -q
 ```
+
+Тесты работают на временной SQLite. Миграции проверены и на PostgreSQL 16: `upgrade`, `check`, `downgrade`, `upgrade`.
 
 - `tests/test_shares.py` — расчёт долей, сумма всегда 100;
 - `tests/test_api.py` — создание кампании, откат, редактор, валидация (на эмуляторе);
