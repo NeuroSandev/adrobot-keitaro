@@ -5,7 +5,7 @@ import re
 import secrets
 import string
 
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -186,8 +186,13 @@ def create_campaign(client, db: Session, settings: Settings, *, name: str, geo: 
             error=type(error).__name__)
         # Кампания уже живёт в Keitaro, а о ней нет записи: убираем, чтобы состояния не разошлись.
         if _remove_campaign(client, campaign_id, alias, "db_failure"):
-            raise StorageError("Не удалось записать кампанию в базу ("
-                               f"{type(error).__name__}). В Keitaro ничего не осталось, повторите позже") from error
+            if isinstance(error, IntegrityError):
+                hint = (f"В базе уже есть кампания с ID {campaign_id} (остаток от прошлого запуска "
+                        "эмулятора?). Очистите таблицы или используйте чистую базу")
+            else:
+                hint = "Повторите позже"
+            raise StorageError(f"Не удалось записать кампанию в базу ({type(error).__name__}). "
+                               f"В Keitaro ничего не осталось. {hint}") from error
         raise StorageError(f"Не удалось записать кампанию в базу ({type(error).__name__}), "
                            f"и удалить её из Keitaro не удалось. Удалите кампанию {campaign_id} вручную") from error
     log(logging.INFO, "campaign_created", campaign_id=campaign_id, alias=alias, offer_id=offer_id,
