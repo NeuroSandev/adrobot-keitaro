@@ -13,4 +13,7 @@ def get_keitaro():
         return FakeKeitaro()
     if not settings.keitaro_url or not settings.keitaro_api_key:
         raise KeitaroError(500, "Не заданы KEITARO_URL и KEITARO_API_KEY (или включите KEITARO_FAKE=1)")
-    return KeitaroClient(settings.keitaro_url, settings.keitaro_api_key)
+    return KeitaroClient(settings.keitaro_url, settings.keitaro_api_key,
+                         timeout=settings.keitaro_timeout,
+                         connect_timeout=settings.keitaro_connect_timeout,
+                         retries=settings.keitaro_retries, backoff=settings.keitaro_backoff)

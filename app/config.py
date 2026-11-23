@@ -9,6 +9,11 @@ class Settings(BaseSettings):
     keitaro_url: str = ""
     keitaro_api_key: str = ""
     keitaro_fake: bool = False
+    keitaro_timeout: float = 20.0
+    keitaro_connect_timeout: float = 5.0
+    keitaro_retries: int = 3          # дополнительных попыток после первой
+    keitaro_backoff: float = 0.5      # пауза между попытками: 0.5, 1, 2 секунды
+    log_level: str = "INFO"
 
     database_url: str = "sqlite:///./app.db"
 

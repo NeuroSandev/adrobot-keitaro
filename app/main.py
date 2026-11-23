@@ -5,12 +5,15 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import router
+from app.config import get_settings
 from app.keitaro.client import KeitaroError
-from app.services.campaigns import ValidationError
+from app.logs import setup_logging
+from app.services.campaigns import StorageError, ValidationError
 from app.services.editor import NotFound
 
 STATIC = Path(__file__).parent / "static"
 
+setup_logging(get_settings().log_level)
 app = FastAPI(title="Keitaro campaign tool")
 app.include_router(router)
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
@@ -24,6 +27,11 @@ def _validation(_: Request, error: ValidationError):
 @app.exception_handler(NotFound)
 def _not_found(_: Request, error: NotFound):
     return JSONResponse(status_code=404, content={"detail": str(error)})
+
+
+@app.exception_handler(StorageError)
+def _storage(_: Request, error: StorageError):
+    return JSONResponse(status_code=503, content={"detail": str(error)})
 
 
 @app.exception_handler(KeitaroError)

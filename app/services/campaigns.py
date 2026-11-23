@@ -1,18 +1,25 @@
 """Создание кампании: кампания + поток по гео на safe-URL + поток с оффером."""
 
+import logging
 import re
 import secrets
 import string
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.config import Settings
 from app.keitaro.client import KeitaroError
+from app.logs import log
 from app.models import CreatedCampaign
 
 
 class ValidationError(Exception):
     pass
+
+
+class StorageError(Exception):
+    """Не удалось записать в базу сервиса."""
 
 
 GEO_RE = re.compile(r"^[A-Z]{2}$")
@@ -43,6 +50,29 @@ def _find_or_create(items: list[dict], name: str, create) -> int:
         if item.get("name", "").strip().lower() == name.strip().lower():
             return item["id"]
     return create(name)["id"]
+
+
+def _find_by_alias(client, alias: str) -> dict | None:
+    """Исход POST /campaigns неизвестен: смотрим, появилась ли кампания с нашим случайным alias."""
+    try:
+        for campaign in client.list_campaigns():
+            if campaign.get("alias") == alias:
+                return campaign
+    except KeitaroError as error:
+        log(logging.ERROR, "campaign_lookup_failed", alias=alias, error=error.message)
+    return None
+
+
+def _remove_campaign(client, campaign_id: int, alias: str, reason: str) -> bool:
+    """Компенация: убрать кампанию из Keitaro. Сбой удаления не теряем молча — пишем в лог."""
+    try:
+        client.delete_campaign(campaign_id)
+    except KeitaroError as error:
+        log(logging.ERROR, "campaign_orphaned", campaign_id=campaign_id, alias=alias, reason=reason,
+            error=error.message)
+        return False
+    log(logging.WARNING, "campaign_rolled_back", campaign_id=campaign_id, alias=alias, reason=reason)
+    return True
 
 
 def resolve_domain(client, settings: Settings, domain_id: int | None) -> dict:
@@ -87,17 +117,28 @@ def create_campaign(client, db: Session, settings: Settings, *, name: str, geo: 
                                     client.create_traffic_source)
 
     alias = _alias()
-    campaign = client.create_campaign({
-        "name": name,
-        "alias": alias,
-        "type": "position",          # ротация потоков по позиции
-        "state": "active",
-        "domain_id": domain["id"],
-        "group_id": group_id,
-        "traffic_source_id": source_id,
-        "cost_type": "CPC",
-        "cost_auto": True,
-    })
+    try:
+        campaign = client.create_campaign({
+            "name": name,
+            "alias": alias,
+            "type": "position",          # ротация потоков по позиции
+            "state": "active",
+            "domain_id": domain["id"],
+            "group_id": group_id,
+            "traffic_source_id": source_id,
+            "cost_type": "CPC",
+            "cost_auto": True,
+        })
+    except KeitaroError as error:
+        if not error.unknown:
+            raise
+        # Ответа нет: кампания могла создаться. Повторять POST нельзя (будет дубль),
+        # поэтому ищем по alias: если нашлась, продолжаем с ней.
+        campaign = _find_by_alias(client, alias)
+        if campaign is None:
+            log(logging.ERROR, "campaign_create_failed", alias=alias, error=error.message)
+            raise
+        log(logging.WARNING, "campaign_recovered", campaign_id=campaign["id"], alias=alias)
     campaign_id = campaign["id"]
     alias = campaign.get("alias") or alias
 
@@ -127,10 +168,7 @@ def create_campaign(client, db: Session, settings: Settings, *, name: str, geo: 
         })
     except KeitaroError:
         # Без потоков кампания бесполезна: убираем её, чтобы не оставлять мусор в трекере.
-        try:
-            client.delete_campaign(campaign_id)
-        except KeitaroError:
-            pass
+        _remove_campaign(client, campaign_id, alias, "stream_failed")
         raise
 
     record = CreatedCampaign(
@@ -139,6 +177,19 @@ def create_campaign(client, db: Session, settings: Settings, *, name: str, geo: 
         geo_stream_id=geo_stream["id"], offers_stream_id=offers_stream["id"],
         url=campaign_url(domain["name"], alias),
     )
-    db.add(record)
-    db.commit()
+    try:
+        db.add(record)
+        db.commit()
+    except SQLAlchemyError as error:
+        db.rollback()
+        log(logging.ERROR, "campaign_record_failed", campaign_id=campaign_id, alias=alias,
+            error=type(error).__name__)
+        # Кампания уже живёт в Keitaro, а о ней нет записи: убираем, чтобы состояния не разошлись.
+        if _remove_campaign(client, campaign_id, alias, "db_failure"):
+            raise StorageError("Не удалось записать кампанию в базу ("
+                               f"{type(error).__name__}). В Keitaro ничего не осталось, повторите позже") from error
+        raise StorageError(f"Не удалось записать кампанию в базу ({type(error).__name__}), "
+                           f"и удалить её из Keitaro не удалось. Удалите кампанию {campaign_id} вручную") from error
+    log(logging.INFO, "campaign_created", campaign_id=campaign_id, alias=alias, offer_id=offer_id,
+        geo=countries)
     return record
